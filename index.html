@@ -1,0 +1,336 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Upload Labs Schematic viewer</title>
+
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    
+    <style>
+        body, html {
+            height: 100%;
+            margin: 0;
+            overflow: hidden;
+            background-color: #212529;
+        }
+
+        #main-nav {
+            position: relative;
+            z-index: 10;
+        }
+
+        #canvas-wrapper {
+            width: 100%;
+            height: calc(100% - 56px);
+            overflow: auto;
+            cursor: grab;
+            position: relative;
+        }
+
+        #schematic-container {
+            position: relative;
+            width: 8000px;
+            height: 8000px;
+            transform-origin: top left;
+        }
+
+        .window-node {
+            position: absolute;
+            min-width: 200px;
+            user-select: none;
+            border: 1px solid #495057; /* Bootstrap gray */
+        }
+
+        .window-node .card-header {
+            cursor: move;
+            padding: 0.5rem 1rem;
+            font-weight: bold;
+            text-transform: capitalize;
+        }
+        
+        .window-node .card-body {
+            padding: 0.75rem;
+        }
+
+        .port-container {
+            padding: 4px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .port-label {
+            padding-right: 15px;
+            padding-left: 15px;
+            font-size: 0.8rem;
+        }
+
+        .port {
+            width: 12px;
+            height: 12px;
+            background-color: #0dcaf0;
+            border-radius: 50%;
+            border: 1px solid #6ff0ff;
+            display: inline-block;
+        }
+        
+        .jtk-connector path {
+            stroke: #0dcaf0;
+            stroke-width: 2;
+        }
+
+        .jtk-endpoint {
+            cursor: pointer;
+        }
+        
+        #importModal .modal-body textarea {
+            height: 40vh; /* Make textarea taller */
+            font-family: monospace;
+        }
+    </style>
+    
+    <script src="https://cdn.jsdelivr.net/npm/jsplumb@2.15.6/dist/js/jsplumb.min.js"></script>
+
+</head>
+<body class="bg-dark text-light">
+
+    <!-- Navbar -->
+    <nav id="main-nav" class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary">
+        <div class="container-fluid">
+            <a class="navbar-brand" href="#">Schematic Visualizer</a>
+            <button class="btn btn-outline-info" type="button" data-bs-toggle="modal" data-bs-target="#importModal">
+                Import Schematic
+            </button>
+        </div>
+    </nav>
+
+    <!-- Canvas for the schematic -->
+    <div id="canvas-wrapper">
+        <div id="schematic-container">
+            <div class="d-flex justify-content-center align-items-center h-50">
+                <h3 class="text-muted">Click "Import Schematic" to load data.</h3>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap Modal for JSON Import -->
+    <div class="modal fade" id="importModal" tabindex="-1" aria-labelledby="importModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="importModalLabel">Import Schematic Data</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <p class="text-muted">Paste your schematic content (starting with `[schematic]`) into the text area below.</p>
+                    <textarea id="jsonInput" class="form-control bg-dark text-light border-secondary" rows="15" placeholder="[schematic]&#10;windows={...}&#10;connectors={...}"></textarea>
+                    <div class="alert alert-danger mt-3 d-none" id="jsonError">Invalid format. Please check the console for more details.</div>
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    <button type="button" class="btn btn-primary" id="loadJsonBtn">Load Schematic</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Bootstrap 5 JS Bundle -->
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    
+    <!-- Application Logic -->
+    <script>
+        document.addEventListener('DOMContentLoaded', function () {
+            
+            const container = document.getElementById("schematic-container");
+            const wrapper = document.getElementById('canvas-wrapper');
+            const loadJsonBtn = document.getElementById('loadJsonBtn');
+            const jsonInput = document.getElementById('jsonInput');
+            const jsonError = document.getElementById('jsonError');
+            const importModalEl = document.getElementById('importModal');
+            const importModal = new bootstrap.Modal(importModalEl);
+
+            let jsPlumbInstance = null;
+            
+
+            function parseSchematicToObject(text) {
+                const extractBlockContent = (key, rawText) => {
+                    const blockStart = rawText.indexOf(key + "={");
+                    if (blockStart === -1) return null;
+
+                    const startIndex = blockStart + key.length + 2; 
+                    let openBraces = 1;
+                    
+                    for (let i = startIndex; i < rawText.length; i++) {
+                        if (rawText[i] === '{') openBraces++;
+                        if (rawText[i] === '}') openBraces--;
+                        if (openBraces === 0) {
+                            return rawText.substring(startIndex, i);
+                        }
+                    }
+                    return null;
+                };
+
+                const windowsContent = extractBlockContent("windows", text);
+                const connectorsContent = extractBlockContent("connectors", text);
+
+                if (windowsContent === null || connectorsContent === null) {
+                    throw new Error("Could not find or parse 'windows' and 'connectors' blocks. Check for balanced curly braces {}.");
+                }
+
+                const cleanContentString = (content) => {
+                    // 1. Remove trailing commas before a closing brace or bracket (important for JSON validity)
+                    let cleaned = content.replace(/,\s*([}\]])/g, '$1');
+                    // 2. Vector2(x, y) -> {"x": x, "y": y}
+                    cleaned = cleaned.replace(/Vector2\(([^,]+), ([^\)]+)\)/g, '{"x": $1, "y": $2}');
+                    // 3. Array[String]([...]) -> [...]
+                    cleaned = cleaned.replace(/Array\[String\]\(([^)]*)\)/g, '$1');
+                    return cleaned;
+                };
+
+                const finalJsonString = `{
+                    "windows": {${cleanContentString(windowsContent)}},
+                    "connectors": {${cleanContentString(connectorsContent)}}
+                }`;
+
+                return JSON.parse(finalJsonString);
+            }
+
+
+            // --- MAIN RENDERING FUNCTION ---
+            function renderSchematic(schematicData) {
+                container.innerHTML = '';
+                if (jsPlumbInstance) jsPlumbInstance.reset();
+
+                jsPlumbInstance = jsPlumb.getInstance({
+                    Container: container,
+                    Connector: ["Flowchart", { cornerRadius: 5, stub: 30 }],
+                    Endpoint: "Blank"
+                });
+
+                const allWindows = Object.values(schematicData.windows);
+                if (allWindows.length === 0) return;
+
+                const xCoords = allWindows.map(w => w.position.x);
+                const yCoords = allWindows.map(w => w.position.y);
+                const minX = Math.min(...xCoords);
+                const minY = Math.min(...yCoords);
+                const offsetX = -minX + 100;
+                const offsetY = -minY + 100;
+                const idToElementMap = new Map();
+
+                for (const [windowId, windowData] of Object.entries(schematicData.windows)) {
+                    let title = windowData.window.replace(/_/g, ' ');
+                    const windowNode = document.createElement('div');
+                    windowNode.className = 'card window-node bg-dark text-light';
+                    windowNode.id = windowId;
+                    windowNode.style.left = (windowData.position.x + offsetX) + 'px';
+                    windowNode.style.top = (windowData.position.y + offsetY) + 'px';
+                    const cardHeader = document.createElement('div');
+                    cardHeader.className = 'card-header';
+                    cardHeader.textContent = title;
+                    const cardBody = document.createElement('div');
+                    cardBody.className = 'card-body';
+                    windowNode.appendChild(cardHeader);
+                    windowNode.appendChild(cardBody);
+                    for (const [containerName, containerData] of Object.entries(windowData.container_data)) {
+                        const portContainer = document.createElement('div');
+                        portContainer.className = 'port-container';
+                        const portLabel = document.createElement('span');
+                        const labelText = containerName.split('/').pop();
+                        portLabel.textContent = labelText;
+                        portLabel.className = 'port-label';
+                        const port = document.createElement('div');
+                        port.className = 'port';
+                        port.id = containerData.id;
+                        idToElementMap.set(containerData.id, { element: port, data: containerData });
+                        if (containerData.outputs_id && containerData.outputs_id.length > 0) {
+                             portContainer.appendChild(portLabel);
+                             portContainer.appendChild(port);
+                        } else {
+                             portContainer.appendChild(port);
+                             portContainer.appendChild(portLabel);
+                        }
+                        cardBody.appendChild(portContainer);
+                    }
+                    container.appendChild(windowNode);
+                }
+
+                jsPlumbInstance.batch(() => {
+                    for (const item of idToElementMap.values()) {
+                        if (item.data.outputs_id && item.data.outputs_id.length > 0) {
+                            const sourceId = item.data.id;
+                            item.data.outputs_id.forEach(targetId => {
+                                if (idToElementMap.has(targetId)) {
+                                     jsPlumbInstance.connect({
+                                        source: sourceId,
+                                        target: targetId,
+                                        anchors: ["Right", "Left"]
+                                    });
+                                }
+                            });
+                        }
+                    }
+                });
+                
+                jsPlumbInstance.draggable(document.querySelectorAll(".window-node"), { handle: ".card-header" });
+            }
+
+            // --- EVENT LISTENERS ---
+
+            loadJsonBtn.addEventListener('click', () => {
+                try {
+                    jsonError.classList.add('d-none');
+                    
+                    const schematicObject = parseSchematicToObject(jsonInput.value);
+
+                    renderSchematic(schematicObject);
+                    importModal.hide();
+                } catch (e) {
+                    jsonError.textContent = e.message;
+                    jsonError.classList.remove('d-none');
+                    console.error("Failed to parse schematic data. Error:", e);
+                }
+            });
+
+            // --- Pan and Zoom Logic ---
+            let isPanning = false;
+            let startX, startY, scrollLeft, scrollTop;
+            let scale = 1.0;
+            const onPanStart = (e) => {
+                if (e.target !== wrapper && e.target !== container) return;
+                isPanning = true;
+                wrapper.style.cursor = 'grabbing';
+                const touch = e.touches ? e.touches[0] : e;
+                startX = touch.pageX - wrapper.offsetLeft;
+                startY = touch.pageY - wrapper.offsetTop;
+                scrollLeft = wrapper.scrollLeft;
+                scrollTop = wrapper.scrollTop;
+            };
+            const onPanEnd = () => { isPanning = false; wrapper.style.cursor = 'grab'; };
+            const onPanMove = (e) => {
+                if (!isPanning) return;
+                e.preventDefault();
+                const touch = e.touches ? e.touches[0] : e;
+                const x = touch.pageX - wrapper.offsetLeft;
+                const y = touch.pageY - wrapper.offsetTop;
+                wrapper.scrollLeft = scrollLeft - (x - startX);
+                wrapper.scrollTop = scrollTop - (y - startY);
+            };
+            wrapper.addEventListener('mousedown', onPanStart);
+            wrapper.addEventListener('mouseup', onPanEnd);
+            wrapper.addEventListener('mouseleave', onPanEnd);
+            wrapper.addEventListener('mousemove', onPanMove);
+            wrapper.addEventListener('touchstart', onPanStart);
+            wrapper.addEventListener('touchend', onPanEnd);
+            wrapper.addEventListener('touchmove', onPanMove);
+            wrapper.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const delta = e.deltaY > 0 ? -0.1 : 0.1;
+                scale = Math.max(0.2, Math.min(2.0, scale + delta));
+                container.style.transform = `scale(${scale})`;
+            });
+        });
+    </script>
+</body>
+</html>

@@ -543,7 +543,7 @@
                 if (isPinching && e.touches && e.touches.length === 2) {
                     const currentPinchDistance = getDistance(e.touches[0], e.touches[1]);
                     const scaleFactor = currentPinchDistance / initialPinchDistance;
-                    scale = Math.max(0.2, Math.min(2.0, lastScale * scaleFactor));
+                    scale = Math.max(0.1, Math.min(2.0, lastScale * scaleFactor));
                     container.style.transform = `scale(${scale})`;
                     jsPlumbInstance.repaintEverything();
                 } else if (isPanning && (!e.touches || e.touches.length === 1)) {
@@ -571,7 +571,7 @@
                 const contentMouseX = (wrapper.scrollLeft + mouseX) / scale;
                 const contentMouseY = (wrapper.scrollTop + mouseY) / scale;
                 const delta = e.deltaY > 0 ? -0.1 : 0.1;
-                scale = Math.max(0.2, Math.min(2.0, scale + delta));
+                scale = Math.max(0.1, Math.min(2.0, scale + delta));
                 container.style.transform = `scale(${scale})`;
                 jsPlumbInstance.repaintEverything();
                 const newScrollLeft = (contentMouseX * scale) - mouseX;

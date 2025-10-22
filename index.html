@@ -46,6 +46,7 @@
             box-shadow: 0 0 15px rgba(0, 202, 240, 0.2);
             background-color: #2c3034;
             transition: box-shadow 0.3s ease-in-out;
+            cursor: pointer;
         }
 
         .window-node .card-header {
@@ -86,6 +87,12 @@
         .jtk-connector path {
             stroke: #6ff0ff;
             stroke-width: 3;
+            transition: stroke 0.3s ease-in-out, stroke-width 0.3s ease-in-out;
+        }
+
+        .jtk-connector.highlight-connector path {
+            stroke: #ffc107;
+            stroke-width: 5;
         }
 
         .jtk-endpoint {
@@ -93,8 +100,17 @@
         }
         
         #importModal .modal-body textarea {
-            height: 40vh; /* Make textarea taller */
+            height: 40vh;
             font-family: monospace;
+        }
+        
+        #summaryModal .modal-body {
+            font-family: monospace;
+            white-space: pre-wrap;
+            background-color: #343a40;
+            border-radius: 5px;
+            padding: 15px;
+            font-size: 1.1rem;
         }
 
         #toast-container {
@@ -144,6 +160,9 @@
                     <button class="btn btn-outline-info me-2 mb-2 mb-lg-0" type="button" data-bs-toggle="modal" data-bs-target="#importModal">
                         Import
                     </button>
+                    <button class="btn btn-outline-warning me-2 mb-2 mb-lg-0" type="button" id="summarizeBtn">
+                        Summarize
+                    </button>
                     <button class="btn btn-outline-primary me-2 mb-2 mb-lg-0" type="button" id="shareBtn">
                         Share
                     </button>
@@ -165,7 +184,7 @@
         </div>
     </div>
 
-    <!-- Bootstrap Modal for JSON Import -->
+    <!-- Modal for JSON Import -->
     <div class="modal fade" id="importModal" tabindex="-1" aria-labelledby="importModalLabel" aria-hidden="true">
         <div class="modal-dialog modal-lg">
             <div class="modal-content bg-dark text-light">
@@ -182,6 +201,24 @@
                 <div class="modal-footer border-secondary">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                     <button type="button" class="btn btn-primary" id="loadJsonBtn">Load Schematic</button>
+                </div>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Modal for Summary -->
+    <div class="modal fade" id="summaryModal" tabindex="-1" aria-labelledby="summaryModalLabel" aria-hidden="true">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content bg-dark text-light">
+                <div class="modal-header border-secondary">
+                    <h5 class="modal-title" id="summaryModalLabel">Schematic Summary</h5>
+                    <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body" id="summaryBody">
+                    <!-- Summary content will be injected here -->
+                </div>
+                <div class="modal-footer border-secondary">
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
                 </div>
             </div>
         </div>
@@ -205,9 +242,16 @@
             const jsonError = document.getElementById('jsonError');
             const importModalEl = document.getElementById('importModal');
             const importModal = new bootstrap.Modal(importModalEl);
+            const summarizeBtn = document.getElementById('summarizeBtn');
+            const summaryModalEl = document.getElementById('summaryModal');
+            const summaryModal = new bootstrap.Modal(summaryModalEl);
+            const summaryBody = document.getElementById('summaryBody');
+
 
             let jsPlumbInstance = null;
             let currentSchematicData = null;
+            let connectionsMap = new Map();
+            let idToElementMap = new Map();
 
             function parseSchematicToObject(text) {
                 const extractBlockContent = (key, rawText) => {
@@ -235,29 +279,48 @@
                 }
 
                 const cleanContentString = (content) => {
-                    // 1. Remove trailing commas before a closing brace or bracket (important for JSON validity)
                     let cleaned = content.replace(/,\s*([}\]])/g, '$1');
-                    // 2. Vector2(x, y) -> {"x": x, "y": y}
                     cleaned = cleaned.replace(/Vector2\(([^,]+), ([^\)]+)\)/g, '{"x": $1, "y": $2}');
-                    // 3. Array[String]([...]) -> [...]
                     cleaned = cleaned.replace(/Array\[String\]\(([^)]*)\)/g, '$1');
                     return cleaned;
                 };
 
-                const finalJsonString = `{
-                    "windows": {${cleanContentString(windowsContent)}},
-                    "connectors": {${cleanContentString(connectorsContent)}}
-                }`;
+                const finalJsonString = `{\n                    "windows": {${cleanContentString(windowsContent)}},\n                    "connectors": {${cleanContentString(connectorsContent)}}\n                }`;
 
                 return JSON.parse(finalJsonString);
             }
 
+
+            // --- HIGHLIGHTING LOGIC ---
+            function clearAllHighlights() {
+                document.querySelectorAll('.window-node.highlight-node').forEach(n => n.classList.remove('highlight-node'));
+                document.querySelectorAll('.jtk-connector.highlight-connector').forEach(c => c.classList.remove('highlight-connector'));
+            }
+
+            function highlightNodeAndConnections(node) {
+                clearAllHighlights();
+
+                if (!node) return;
+
+                node.classList.add('highlight-node');
+
+                const portIds = Array.from(node.querySelectorAll('.port')).map(p => p.id);
+
+                jsPlumbInstance.select().each(function(connection) {
+                    if (portIds.includes(connection.sourceId) || portIds.includes(connection.targetId)) {
+                        if (connection.connector.canvas) {
+                            connection.connector.canvas.classList.add('highlight-connector');
+                        }
+                    }
+                });
+            }
 
             // --- MAIN RENDERING FUNCTION ---
             function renderSchematic(schematicData) {
                 currentSchematicData = schematicData;
                 container.innerHTML = '';
                 if (jsPlumbInstance) jsPlumbInstance.reset();
+                connectionsMap.clear();
 
                 jsPlumbInstance = jsPlumb.getInstance({
                     Container: container,
@@ -274,7 +337,7 @@
                 const minY = Math.min(...yCoords);
                 const offsetX = -minX + 100;
                 const offsetY = -minY + 100;
-                const idToElementMap = new Map();
+                idToElementMap.clear();
 
                 for (const [windowId, windowData] of Object.entries(schematicData.windows)) {
                     let title = windowData.window.replace(/_/g, ' ');
@@ -283,13 +346,24 @@
                     windowNode.id = windowId;
                     windowNode.style.left = (windowData.position.x + offsetX) + 'px';
                     windowNode.style.top = (windowData.position.y + offsetY) + 'px';
+
                     const cardHeader = document.createElement('div');
                     cardHeader.className = 'card-header';
                     cardHeader.textContent = title;
+                    
                     const cardBody = document.createElement('div');
                     cardBody.className = 'card-body';
+                    
                     windowNode.appendChild(cardHeader);
                     windowNode.appendChild(cardBody);
+
+                    windowNode.addEventListener('click', (e) => {
+                        if (!cardHeader.contains(e.target)) {
+                            e.stopPropagation(); 
+                            highlightNodeAndConnections(windowNode);
+                        }
+                    });
+
                     for (const [containerName, containerData] of Object.entries(windowData.container_data)) {
                         const portContainer = document.createElement('div');
                         portContainer.className = 'port-container';
@@ -319,11 +393,13 @@
                             const sourceId = item.data.id;
                             item.data.outputs_id.forEach(targetId => {
                                 if (idToElementMap.has(targetId)) {
-                                     jsPlumbInstance.connect({
+                                    const connection = jsPlumbInstance.connect({
                                         source: sourceId,
                                         target: targetId,
                                         anchors: ["Right", "Left"]
                                     });
+                                    connectionsMap.set(`${sourceId}-${targetId}`, connection);
+                                    connectionsMap.set(`${targetId}-${sourceId}`, connection);
                                 }
                             });
                         }
@@ -335,16 +411,18 @@
 
             // --- EVENT LISTENERS ---
 
+            wrapper.addEventListener('click', (e) => {
+                if (e.target === wrapper || e.target === container) {
+                    clearAllHighlights();
+                }
+            });
+
             loadJsonBtn.addEventListener('click', () => {
                 try {
                     jsonError.classList.add('d-none');
-                    
                     const schematicObject = parseSchematicToObject(jsonInput.value);
-
                     renderSchematic(schematicObject);
-                    
                     loadJsonBtn.blur(); 
-
                     importModal.hide();
                 } catch (e) {
                     jsonError.textContent = e.message;
@@ -364,7 +442,6 @@
                 }
             });
 
-            const shareBtn = document.getElementById('shareBtn');
             shareBtn.addEventListener('click', async () => {
                 if (!currentSchematicData) {
                     showToast("No schematic loaded to share.", "warning");
@@ -373,11 +450,9 @@
 
                 try {
                     const jsonString = JSON.stringify(currentSchematicData);
-
                     const compressed = pako.deflate(jsonString);
                     const binaryString = Array.from(compressed, byte => String.fromCharCode(byte)).join('');
                     const base64Data = btoa(binaryString);
-
                     const shareUrl = `${window.location.origin}${window.location.pathname}#schematic_compressed=${base64Data}`;
 
                     await navigator.clipboard.writeText(shareUrl);
@@ -387,6 +462,44 @@
                     showToast('Failed to generate share link. See console.', 'danger');
                 }
             });
+            
+            // --- SUMMARY LOGIC ---
+            function generateShortSummary(schematicData) {
+                if (!schematicData || !schematicData.windows) {
+                    return "No data to summarize.";
+                }
+
+                const windows = Object.values(schematicData.windows);
+                const totalNodes = windows.length;
+                
+                const typeCounts = windows.reduce((counts, windowData) => {
+                    const nodeType = windowData.window
+                        .replace(/_/g, ' ')
+                        .replace(/\b\w/g, char => char.toUpperCase());
+                    
+                    counts[nodeType] = (counts[nodeType] || 0) + 1;
+                    return counts;
+                }, {});
+
+                let summaryText = `Total nodes: ${totalNodes}\n\n`;
+                const sortedTypes = Object.keys(typeCounts).sort();
+                
+                for (const type of sortedTypes) {
+                    summaryText += `${type}: ${typeCounts[type]}\n`;
+                }
+                return summaryText;
+            }
+
+            summarizeBtn.addEventListener('click', () => {
+                if (!currentSchematicData) {
+                    showToast("No schematic loaded to summarize.", "warning");
+                    return;
+                }
+                const summaryText = generateShortSummary(currentSchematicData);
+                summaryBody.textContent = summaryText;
+                summaryModal.show();
+            });
+
 
             // --- Pan and Zoom Logic ---
             let isPanning = false;
@@ -397,14 +510,11 @@
             let isPinching = false;
 
             const getDistance = (touch1, touch2) => {
-                return Math.sqrt(
-                    Math.pow(touch2.pageX - touch1.pageX, 2) +
-                    Math.pow(touch2.pageY - touch1.pageY, 2)
-                );
+                return Math.sqrt(Math.pow(touch2.pageX - touch1.pageX, 2) + Math.pow(touch2.pageY - touch1.pageY, 2));
             };
 
             const onPanStart = (e) => {
-                if (e.target !== wrapper && e.target !== container) return;
+                if (e.target.closest('.window-node')) return;
                 
                 if (e.touches && e.touches.length === 2) {
                     isPinching = true;
@@ -453,25 +563,19 @@
             wrapper.addEventListener('touchend', onPanEnd);
             wrapper.addEventListener('touchcancel', onPanEnd);
             wrapper.addEventListener('touchmove', onPanMove);
+            
             wrapper.addEventListener('wheel', (e) => {
                 e.preventDefault();
-
                 const mouseX = e.clientX - wrapper.getBoundingClientRect().left;
                 const mouseY = e.clientY - wrapper.getBoundingClientRect().top;
-				
                 const contentMouseX = (wrapper.scrollLeft + mouseX) / scale;
                 const contentMouseY = (wrapper.scrollTop + mouseY) / scale;
-
                 const delta = e.deltaY > 0 ? -0.1 : 0.1;
-                const oldScale = scale;
                 scale = Math.max(0.2, Math.min(2.0, scale + delta));
-
                 container.style.transform = `scale(${scale})`;
                 jsPlumbInstance.repaintEverything();
-
                 const newScrollLeft = (contentMouseX * scale) - mouseX;
                 const newScrollTop = (contentMouseY * scale) - mouseY;
-
                 wrapper.scrollLeft = newScrollLeft;
                 wrapper.scrollTop = newScrollTop;
             });
@@ -485,13 +589,10 @@
                 const toastHTML = `
                     <div id="${toastId}" class="toast align-items-center text-white bg-${type} border-0" role="alert" aria-live="assertive" aria-atomic="true">
                         <div class="d-flex">
-                            <div class="toast-body">
-                                ${message}
-                            </div>
+                            <div class="toast-body">${message}</div>
                             <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
                         </div>
-                    </div>
-                `;
+                    </div>`;
                 toastContainer.insertAdjacentHTML('beforeend', toastHTML);
                 const toastEl = document.getElementById(toastId);
                 const toast = new bootstrap.Toast(toastEl, { delay: 3000 });
@@ -505,12 +606,9 @@
                     showToast("Nothing to capture.", "warning");
                     return;
                 }
-
                 const originalText = screenshotBtn.textContent;
                 screenshotBtn.disabled = true;
                 screenshotBtn.textContent = 'Generating...';
-
-                // --- Calculate bounds ---
                 let minX = Infinity, minY = Infinity, maxX = 0, maxY = 0;
                 nodes.forEach(node => {
                     const x = parseFloat(node.style.left);
@@ -522,38 +620,26 @@
                     maxX = Math.max(maxX, x + w);
                     maxY = Math.max(maxY, y + h);
                 });
-
                 const padding = 100;
                 const contentWidth = maxX - minX + (padding * 2);
                 const contentHeight = maxY - minY + (padding * 2);
-
-                // --- Temporarily resize and reposition for capture ---
                 const originalContainerWidth = container.style.width;
                 const originalContainerHeight = container.style.height;
                 const originalTransforms = new Map();
-
                 container.style.width = `${contentWidth}px`;
                 container.style.height = `${contentHeight}px`;
-                
                 nodes.forEach(node => {
                     originalTransforms.set(node, { left: node.style.left, top: node.style.top });
                     node.style.left = (parseFloat(node.style.left) - minX + padding) + 'px';
                     node.style.top = (parseFloat(node.style.top) - minY + padding) + 'px';
                 });
-                
                 jsPlumbInstance.repaintEverything();
                 await new Promise(resolve => setTimeout(resolve, 100));
 
                 try {
                     const canvas = await html2canvas(container, {
-                        scale: 2,
-                        backgroundColor: '#212529',
-                        width: contentWidth,
-                        height: contentHeight,
-                        x: 0,
-                        y: 0
+                        scale: 2, backgroundColor: '#212529', width: contentWidth, height: contentHeight, x: 0, y: 0
                     });
-
                     canvas.toBlob(async (blob) => {
                         try {
                             await navigator.clipboard.write([ new ClipboardItem({ 'image/png': blob }) ]);
@@ -563,12 +649,10 @@
                             showToast('Could not copy image. See console.', 'danger');
                         }
                     }, 'image/png');
-
                 } catch (err) {
                     console.error('Screenshot failed:', err);
                     showToast('Could not generate screenshot. See console.', 'danger');
                 } finally {
-                    // --- Restore original state ---
                     container.style.width = originalContainerWidth;
                     container.style.height = originalContainerHeight;
                     nodes.forEach(node => {
@@ -577,7 +661,6 @@
                         node.style.top = original.top;
                     });
                     jsPlumbInstance.repaintEverything();
-
                     setTimeout(() => {
                         screenshotBtn.disabled = false;
                         screenshotBtn.textContent = originalText;
@@ -596,19 +679,16 @@
                     searchDropdown.remove();
                     searchDropdown = null;
                 }
-                document.querySelectorAll('.window-node').forEach(n => n.classList.remove('highlight-node'));
             }
 
             function focusOnNode(node) {
-                document.querySelectorAll('.window-node').forEach(n => n.classList.remove('highlight-node'));
-                
-                node.classList.add('highlight-node');
+                removeSearchDropdown();
+                highlightNodeAndConnections(node);
                 
                 const scaledNodeLeft = node.offsetLeft * scale;
                 const scaledNodeTop = node.offsetTop * scale;
                 const scaledNodeWidth = node.offsetWidth * scale;
                 const scaledNodeHeight = node.offsetHeight * scale;
-
                 const targetScrollLeft = scaledNodeLeft + (scaledNodeWidth / 2) - (wrapper.offsetWidth / 2);
                 const targetScrollTop = scaledNodeTop + (scaledNodeHeight / 2) - (wrapper.offsetHeight / 2);
 
@@ -617,16 +697,16 @@
                     top: targetScrollTop,
                     behavior: 'smooth'
                 });
-
-                setTimeout(() => node.classList.remove('highlight-node'), 2500);
             }
 
             searchForm.addEventListener('submit', (e) => {
                 e.preventDefault();
                 removeSearchDropdown();
                 const searchTerm = searchInput.value.trim().toLowerCase();
-                if (!searchTerm) return;
-
+                if (!searchTerm) {
+                    clearAllHighlights();
+                    return;
+                }
                 const allNodes = Array.from(container.querySelectorAll('.window-node'));
                 const foundNodes = allNodes.filter(node => {
                     const header = node.querySelector('.card-header');
@@ -638,7 +718,6 @@
                 } else if (foundNodes.length > 1) {
                     searchDropdown = document.createElement('div');
                     searchDropdown.className = 'list-group search-dropdown';
-                    
                     foundNodes.forEach(node => {
                         const item = document.createElement('button');
                         item.type = 'button';
@@ -646,19 +725,16 @@
                         item.textContent = node.querySelector('.card-header').textContent;
                         item.dataset.nodeId = node.id;
                         item.addEventListener('click', () => {
-                            focusOnNode(node);
-                            removeSearchDropdown();
+                            setTimeout(() => focusOnNode(node), 0);
                         });
                         searchDropdown.appendChild(item);
                     });
-
                     searchContainer.appendChild(searchDropdown);
                 } else {
                     showToast(`Node "${searchInput.value}" not found.`, 'warning');
                 }
             });
 
-            // Close dropdown if clicking outside
             document.addEventListener('click', (e) => {
                 if (searchDropdown && !searchContainer.contains(e.target)) {
                     removeSearchDropdown();
@@ -682,11 +758,9 @@
                         const base64Data = hash.substring('#schematic='.length);
                         jsonString = atob(base64Data);
                     }
-
                     if (jsonString) {
                         const schematicObject = JSON.parse(jsonString);
                         renderSchematic(schematicObject);
-						
                         const initialMessage = container.querySelector('h3');
                         if (initialMessage) initialMessage.remove();
                     }
@@ -695,7 +769,6 @@
                     showToast("Failed to load schematic from URL. Invalid data.", "danger");
                 }
             };
-
             loadSchematicFromHash();
         });
     </script>

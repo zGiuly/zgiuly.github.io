@@ -26,6 +26,8 @@
             overflow: auto;
             cursor: grab;
             position: relative;
+            background-image: linear-gradient(to right, #343a40 1px, transparent 1px), linear-gradient(to bottom, #343a40 1px, transparent 1px);
+            background-size: 20px 20px;
         }
 
         #schematic-container {
@@ -39,7 +41,10 @@
             position: absolute;
             min-width: 200px;
             user-select: none;
-            border: 1px solid #495057; /* Bootstrap gray */
+            border: 1px solid #0dcaf0;
+            z-index: 10;
+            box-shadow: 0 0 15px rgba(0, 202, 240, 0.2);
+            background-color: #2c3034;
         }
 
         .window-node .card-header {
@@ -47,6 +52,8 @@
             padding: 0.5rem 1rem;
             font-weight: bold;
             text-transform: capitalize;
+            background-color: #343a40;
+            border-bottom: 1px solid #0dcaf0;
         }
         
         .window-node .card-body {
@@ -67,17 +74,17 @@
         }
 
         .port {
-            width: 12px;
-            height: 12px;
+            width: 14px;
+            height: 14px;
             background-color: #0dcaf0;
             border-radius: 50%;
-            border: 1px solid #6ff0ff;
+            border: 2px solid white;
             display: inline-block;
         }
         
         .jtk-connector path {
-            stroke: #0dcaf0;
-            stroke-width: 2;
+            stroke: #6ff0ff;
+            stroke-width: 3;
         }
 
         .jtk-endpoint {
@@ -123,8 +130,9 @@
                     <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
                 </div>
                 <div class="modal-body">
-                    <p class="text-muted">Paste your schematic content (starting with `[schematic]`) into the text area below.</p>
-                    <textarea id="jsonInput" class="form-control bg-dark text-light border-secondary" rows="15" placeholder="[schematic]&#10;windows={...}&#10;connectors={...}"></textarea>
+                    <p class="text-muted">Paste your schematic content (starting with `[schematic]`) into the text area below, or upload a .txt file.</p>
+                    <textarea id="jsonInput" class="form-control bg-dark text-light border-secondary mb-3" rows="15" placeholder="[schematic]&#10;windows={...}&#10;connectors={...}"></textarea>
+                    <input type="file" id="fileInput" accept=".txt" class="form-control bg-dark text-light border-secondary">
                     <div class="alert alert-danger mt-3 d-none" id="jsonError">Invalid format. Please check the console for more details.</div>
                 </div>
                 <div class="modal-footer border-secondary">
@@ -146,6 +154,7 @@
             const wrapper = document.getElementById('canvas-wrapper');
             const loadJsonBtn = document.getElementById('loadJsonBtn');
             const jsonInput = document.getElementById('jsonInput');
+            const fileInput = document.getElementById('fileInput');
             const jsonError = document.getElementById('jsonError');
             const importModalEl = document.getElementById('importModal');
             const importModal = new bootstrap.Modal(importModalEl);
@@ -293,42 +302,88 @@
                 }
             });
 
+            fileInput.addEventListener('change', (event) => {
+                const file = event.target.files[0];
+                if (file) {
+                    const reader = new FileReader();
+                    reader.onload = (e) => {
+                        jsonInput.value = e.target.result;
+                    };
+                    reader.readAsText(file);
+                }
+            });
+
             // --- Pan and Zoom Logic ---
             let isPanning = false;
             let startX, startY, scrollLeft, scrollTop;
             let scale = 1.0;
+            let initialPinchDistance = 0;
+            let lastScale = 1.0;
+            let isPinching = false;
+
+            const getDistance = (touch1, touch2) => {
+                return Math.sqrt(
+                    Math.pow(touch2.pageX - touch1.pageX, 2) +
+                    Math.pow(touch2.pageY - touch1.pageY, 2)
+                );
+            };
+
             const onPanStart = (e) => {
                 if (e.target !== wrapper && e.target !== container) return;
-                isPanning = true;
-                wrapper.style.cursor = 'grabbing';
-                const touch = e.touches ? e.touches[0] : e;
-                startX = touch.pageX - wrapper.offsetLeft;
-                startY = touch.pageY - wrapper.offsetTop;
-                scrollLeft = wrapper.scrollLeft;
-                scrollTop = wrapper.scrollTop;
+                
+                if (e.touches && e.touches.length === 2) {
+                    isPinching = true;
+                    initialPinchDistance = getDistance(e.touches[0], e.touches[1]);
+                    lastScale = scale; // Store current scale to apply delta
+                } else if (!e.touches || e.touches.length === 1) {
+                    isPanning = true;
+                    wrapper.style.cursor = 'grabbing';
+                    const touch = e.touches ? e.touches[0] : e;
+                    startX = touch.pageX - wrapper.offsetLeft;
+                    startY = touch.pageY - wrapper.offsetTop;
+                    scrollLeft = wrapper.scrollLeft;
+                    scrollTop = wrapper.scrollTop;
+                }
             };
-            const onPanEnd = () => { isPanning = false; wrapper.style.cursor = 'grab'; };
+
+            const onPanEnd = () => { 
+                isPanning = false; 
+                isPinching = false;
+                wrapper.style.cursor = 'grab'; 
+            };
+
             const onPanMove = (e) => {
-                if (!isPanning) return;
                 e.preventDefault();
-                const touch = e.touches ? e.touches[0] : e;
-                const x = touch.pageX - wrapper.offsetLeft;
-                const y = touch.pageY - wrapper.offsetTop;
-                wrapper.scrollLeft = scrollLeft - (x - startX);
-                wrapper.scrollTop = scrollTop - (y - startY);
+
+                if (isPinching && e.touches && e.touches.length === 2) {
+                    const currentPinchDistance = getDistance(e.touches[0], e.touches[1]);
+                    const scaleFactor = currentPinchDistance / initialPinchDistance;
+                    scale = Math.max(0.2, Math.min(2.0, lastScale * scaleFactor));
+                    container.style.transform = `scale(${scale})`;
+                    jsPlumbInstance.repaintEverything();
+                } else if (isPanning && (!e.touches || e.touches.length === 1)) {
+                    const touch = e.touches ? e.touches[0] : e;
+                    const x = touch.pageX - wrapper.offsetLeft;
+                    const y = touch.pageY - wrapper.offsetTop;
+                    wrapper.scrollLeft = scrollLeft - (x - startX);
+                    wrapper.scrollTop = scrollTop - (y - startY);
+                }
             };
+
             wrapper.addEventListener('mousedown', onPanStart);
             wrapper.addEventListener('mouseup', onPanEnd);
             wrapper.addEventListener('mouseleave', onPanEnd);
             wrapper.addEventListener('mousemove', onPanMove);
             wrapper.addEventListener('touchstart', onPanStart);
             wrapper.addEventListener('touchend', onPanEnd);
+            wrapper.addEventListener('touchcancel', onPanEnd);
             wrapper.addEventListener('touchmove', onPanMove);
             wrapper.addEventListener('wheel', (e) => {
                 e.preventDefault();
                 const delta = e.deltaY > 0 ? -0.1 : 0.1;
                 scale = Math.max(0.2, Math.min(2.0, scale + delta));
                 container.style.transform = `scale(${scale})`;
+                jsPlumbInstance.repaintEverything();
             });
         });
     </script>

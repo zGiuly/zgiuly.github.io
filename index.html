@@ -121,6 +121,7 @@
     
     <script src="https://cdn.jsdelivr.net/npm/jsplumb@2.15.6/dist/js/jsplumb.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/pako/2.1.0/pako.min.js"></script>
 
 </head>
 <body class="bg-dark text-light">
@@ -372,8 +373,12 @@
 
                 try {
                     const jsonString = JSON.stringify(currentSchematicData);
-                    const base64Data = btoa(jsonString);
-                    const shareUrl = `${window.location.origin}${window.location.pathname}#schematic=${base64Data}`;
+
+                    const compressed = pako.deflate(jsonString);
+                    const binaryString = Array.from(compressed, byte => String.fromCharCode(byte)).join('');
+                    const base64Data = btoa(binaryString);
+
+                    const shareUrl = `${window.location.origin}${window.location.pathname}#schematic_compressed=${base64Data}`;
 
                     await navigator.clipboard.writeText(shareUrl);
                     showToast('Share link copied to clipboard!');
@@ -663,19 +668,31 @@
             // --- Initial Load from URL Hash ---
             const loadSchematicFromHash = () => {
                 const hash = window.location.hash;
-                if (hash.startsWith('#schematic=')) {
-                    try {
+                try {
+                    let jsonString;
+                    if (hash.startsWith('#schematic_compressed=')) {
+                        const base64Data = hash.substring('#schematic_compressed='.length);
+                        const binaryString = atob(base64Data);
+                        const compressed = new Uint8Array(binaryString.length);
+                        for (let i = 0; i < binaryString.length; i++) {
+                            compressed[i] = binaryString.charCodeAt(i);
+                        }
+                        jsonString = pako.inflate(compressed, { to: 'string' });
+                    } else if (hash.startsWith('#schematic=')) {
                         const base64Data = hash.substring('#schematic='.length);
-                        const jsonString = atob(base64Data);
+                        jsonString = atob(base64Data);
+                    }
+
+                    if (jsonString) {
                         const schematicObject = JSON.parse(jsonString);
                         renderSchematic(schematicObject);
 						
                         const initialMessage = container.querySelector('h3');
                         if (initialMessage) initialMessage.remove();
-                    } catch (e) {
-                        console.error("Failed to load schematic from URL hash:", e);
-                        showToast("Failed to load schematic from URL. Invalid data.", "danger");
                     }
+                } catch (e) {
+                    console.error("Failed to load schematic from URL hash:", e);
+                    showToast("Failed to load schematic from URL. Invalid data.", "danger");
                 }
             };
 
